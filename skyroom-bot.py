@@ -330,6 +330,7 @@ def send_chat_message(driver: webdriver.Chrome, text: str):
     # ===== پیدا کردن دکمه ارسال =====
     send_btn = None
     send_selectors = [
+        (By.XPATH, "//button[.//use[contains(@*,'send')]]"),
         (By.ID, "sendBtn"),
         (By.ID, "btnSend"),
         (By.CLASS_NAME, "send-btn"),
@@ -344,15 +345,12 @@ def send_chat_message(driver: webdriver.Chrome, text: str):
             send_btn = driver.find_element(by, selector)
             if send_btn.is_displayed():
                 logger.info(f"دکمه ارسال با {by}='{selector}' پیدا شد.")
+                send_btn.click()
                 break
         except NoSuchElementException:
-            continue
+            logger.info("دکمه ارسال پیدا نشد. عدم ارسال موفق❌")
 
-    if send_btn is None:
-        raise RuntimeError("❌ دکمه ارسال پیام پیدا نشد.")
 
-    send_btn.click()
-    logger.info(f"✅ پیام ارسال شد.")
 
 
 def analyze_with_openai(messages: List[str]) -> Tuple[bool, str]:
