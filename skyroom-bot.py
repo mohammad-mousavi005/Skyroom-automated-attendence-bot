@@ -5,6 +5,9 @@ SkyRoom Chat Monitor Bot
 هر ۵۰ پیام جدید را به OpenAI می‌فرستد.
 اگر همه آن‌ها فقط اسم و فامیل فارسی باشند، اسم کاربر را در چت می‌فرستد.
 
+تنظیمات را از فایل config.json (کنار اسکریپت) می‌خواند.
+برای تغییر تنظیمات، فقط config.json را ویرایش کنید.
+
 نیازمندی‌ها:
     pip install selenium requests
 """
@@ -12,11 +15,12 @@ SkyRoom Chat Monitor Bot
 import os
 import re
 import sys
+import json
 import subprocess
 import time
 import logging
 import urllib3
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Dict, Any
 from datetime import datetime
 
 from selenium import webdriver
@@ -34,37 +38,6 @@ urllib3.disable_warnings()
 
 
 # =============================================================================
-# ====== کانفیگ (اینجا تغییر بده) ============================================
-# =============================================================================
-
-# آدرس اتاق اسکای‌روم
-SKYROOM_URL = "https://www.skyroom.online/ch/test"
-
-# اسم مهمان برای ورود
-GUEST_NAME = "مهمان"
-
-# اسم و فامیل شما که در صورت تأیید هوش مصنوعی ارسال می‌شود
-MY_FULL_NAME = "اسم فامیل تو"
-
-# کلید API (OpenAI-compatible)
-OPENAI_API_KEY = ""
-
-# آدرس بیس API کاستوم (OpenAI-compatible endpoint)
-OPENAI_BASE_URL = "http://127.0.0.1:5001/v1"
-
-# تعداد پیام در هر بچ برای بررسی
-BATCH_SIZE = 50
-
-# فاصله زمانی بررسی پیام‌های جدید (ثانیه)
-CHECK_INTERVAL = 5
-
-# مدل OpenAI برای تحلیل
-OPENAI_MODEL = "deepseek-v4-pro-nothinking"
-
-# حداکثر زمان انتظار برای لود عناصر (ثانیه)
-WAIT_TIMEOUT = 20
-
-# =============================================================================
 # ====== تنظیمات لاگ =========================================================
 # =============================================================================
 logging.basicConfig(
@@ -76,6 +49,27 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# ====== بارگذاری کانفیگ =====================================================
+# =============================================================================
+
+def load_config() -> Dict[str, Any]:
+    """بارگذاری تنظیمات از فایل config.json (در کنار اسکریپت)."""
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(
+            f"❌ فایل config.json پیدا نشد!\n"
+            f"لطفاً فایل config.json را در مسیر زیر ایجاد کنید:\n"
+            f"{os.path.abspath(config_path)}"
+        )
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+# شیء سراسری کانفیگ (در main مقداردهی می‌شود)
+config: Dict[str, Any] = {}
 
 
 # =============================================================================
@@ -96,7 +90,7 @@ def create_driver() -> webdriver.Chrome:
     if not os.path.exists(driver_path):
         raise FileNotFoundError(
             f"❌ chromedriver.exe پیدا نشد!\n"
-            f"لطفاً chromedriver.exe را از https://googlechromelabs.github.io/chrome-for-testing/ دانلود کرده\n"
+            f"لطفاً chromedriver.exe را از https://googlechromelabs.github.io/chrome-for-testing/ یا https://github.com/dreamshao/chromedriver (بدون فیلتر، دقت شود نسخه مناسب با گوگل کرومِ خود دانلود را کنید) دانلود کرده\n"
             f"و در مسیر زیر قرار دهید:\n{os.path.abspath(driver_path)}"
         )
     service = Service(driver_path)
@@ -161,7 +155,7 @@ def guest_login(driver: webdriver.Chrome):
 
     for by, selector in guest_btn_selectors:
         try:
-            guest_btn = WebDriverWait(driver, 10).until(
+            guest_btn = WebDriverWait(driver, config.get("WAIT_TIMEOUT", 10)).until(
                 EC.element_to_be_clickable((by, selector))
             )
             if guest_btn.is_displayed():
@@ -216,8 +210,8 @@ def guest_login(driver: webdriver.Chrome):
     # اسکرول به عنصر برای اطمینان از قابل تعامل بودن
     driver.execute_script("arguments[0].scrollIntoView(true);", name_input)
     name_input.clear()
-    name_input.send_keys(GUEST_NAME)
-    logger.info(f"نام '{GUEST_NAME}' وارد شد.")
+    name_input.send_keys(config["GUEST_NAME"])
+    logger.info(f"نام '{config['GUEST_NAME']}' وارد شد.")
 
     # ==================== مرحله ۳: دکمه ورود نهایی (XPath ترکیبی) ====================
     submit_xpath = (
@@ -364,32 +358,27 @@ def analyze_with_openai(messages: List[str]) -> Tuple[bool, str]:
     """
     بررسی می‌کند که آیا تمام پیام‌ها فقط شامل اسم و فامیل فارسی هستند.
     برمی‌گرداند (True/False, توضیح).
+    پرامپت از config.json (فیلد AI_PROMPT_TEMPLATE) خوانده می‌شود.
     """
     if not messages:
         return False, "لیست پیام‌ها خالی است."
 
-    # ساخت پرامپت
+    # ساخت پرامپت از قالب موجود در کانفیگ
     numbered_msgs = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(messages)])
-    prompt = f"""به پیام‌های زیر که از یک چت آنلاین جمع‌آوری شده‌اند نگاه کن.
+    template = config.get("AI_PROMPT_TEMPLATE", "")
+    if not template:
+        return False, "❌ قالب پرامپت در config.json تنظیم نشده است."
 
-فقط و فقط با یک عبارت YES یا NO پاسخ بده.
-
-YES: اگر **تمام** {len(messages)} پیام صرفاً اسم و فامیل افراد به زبان فارسی باشند (و نه هیچ چیز دیگری — نه پیام تبلیغاتی، نه احوالپرسی، نه سؤال، نه پیام خداحافظی، نه عدد، نه اسم انگلیسی).
-NO: اگر حتی یکی از پیام‌ها اسم و فامیل فارسی نباشد یا شامل متن اضافی باشد.
-
-لیست پیام‌ها:
-{numbered_msgs}
-
-فقط YES یا NO:"""
+    prompt = template.format(len_messages=len(messages), numbered_msgs=numbered_msgs)
 
     try:
-        url = f"{OPENAI_BASE_URL}/chat/completions"
+        url = f"{config['OPENAI_BASE_URL']}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Authorization": f"Bearer {config['OPENAI_API_KEY']}",
             "Content-Type": "application/json",
         }
         payload = {
-            "model": OPENAI_MODEL,
+            "model": config["OPENAI_MODEL"],
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
             "max_tokens": 5,
@@ -414,13 +403,20 @@ NO: اگر حتی یکی از پیام‌ها اسم و فامیل فارسی ن
 # =============================================================================
 
 def main():
+    global config
+
+    # بارگذاری تنظیمات از config.json
+    config = load_config()
+
     subprocess.run("chcp 65001 > nul", shell=True)
     sys.stdout.reconfigure(encoding='utf-8')
     logger.info("=" * 60)
     logger.info("🚀 SkyRoom Bot شروع به کار کرد.")
-    logger.info(f"آدرس: {SKYROOM_URL}")
-    logger.info(f"اسم مهمان: {GUEST_NAME}")
-    logger.info(f"بچ‌سایز: {BATCH_SIZE} | اینتروال: {CHECK_INTERVAL}s")
+    logger.info(f"آدرس: {config['SKYROOM_URL']}")
+    logger.info(f"اسم مهمان: {config['GUEST_NAME']}")
+    logger.info(f"اسم کاربر: {config['MY_FULL_NAME']}")
+    logger.info(f"بچ‌سایز: {config['BATCH_SIZE']} | اینتروال: {config['CHECK_INTERVAL']}s")
+    logger.info(f"مدل: {config['OPENAI_MODEL']}")
     logger.info("=" * 60)
 
     driver = create_driver()
@@ -431,7 +427,7 @@ def main():
     try:
         # 1. باز کردن سایت
         logger.info("باز کردن سایت...")
-        driver.get(SKYROOM_URL)
+        driver.get(config["SKYROOM_URL"])
 
         # 2. صبر برای لود صفحه لاگین
         time.sleep(5)
@@ -451,7 +447,7 @@ def main():
             try:
                 current_messages = get_messages(driver)
                 if not current_messages:
-                    time.sleep(CHECK_INTERVAL)
+                    time.sleep(config["CHECK_INTERVAL"])
                     continue
 
                 # تشخیص پیام‌های جدید با message-id
@@ -466,35 +462,36 @@ def main():
                 # لاگ وضعیت فقط هر ۳۰ ثانیه یا وقتی پیام جدید هست
                 now = time.time()
                 if new_found > 0:
-                    logger.info(f"+{new_found} پیام جدید | بچ: {len(new_batch)}/{BATCH_SIZE}")
+                    logger.info(f"+{new_found} پیام جدید | بچ: {len(new_batch)}/{config['BATCH_SIZE']}")
                 elif now - last_status_log > 30:
-                    logger.info(f"بچ: {len(new_batch)}/{BATCH_SIZE} (منتظر پیام جدید...)")
+                    logger.info(f"بچ: {len(new_batch)}/{config['BATCH_SIZE']} (منتظر پیام جدید...)")
                     last_status_log = now
 
                 # اگر بچ پر شد
-                if len(new_batch) >= BATCH_SIZE:
-                    batch = new_batch[:BATCH_SIZE]
-                    new_batch = new_batch[BATCH_SIZE:]  # مازاد برای بچ بعدی
+                batch_size = config["BATCH_SIZE"]
+                if len(new_batch) >= batch_size:
+                    batch = new_batch[:batch_size]
+                    new_batch = new_batch[batch_size:]  # مازاد برای بچ بعدی
 
                     logger.info(f"📦 ارسال {len(batch)} پیام به OpenAI برای تحلیل...")
                     is_all_names, reason = analyze_with_openai(batch)
 
                     if is_all_names:
                         logger.info(f"✅ تأیید شد! {reason}")
-                        logger.info(f"📤 ارسال اسم و فامیل: {MY_FULL_NAME}")
-                        send_chat_message(driver, MY_FULL_NAME)
+                        logger.info(f"📤 ارسال اسم و فامیل: {config['MY_FULL_NAME']}")
+                        send_chat_message(driver, config["MY_FULL_NAME"])
                         logger.info("✅ اسم ارسال شد. جمع‌آوری ۵۰ پیام بعدی شروع شد...")
                     else:
                         logger.info(f"❌ رد شد. {reason}")
                         logger.info("منتظر ۵۰ پیام جدید بعدی...")
 
                 # استراحت
-                time.sleep(CHECK_INTERVAL)
+                time.sleep(config["CHECK_INTERVAL"])
 
             except Exception as e:
                 logger.error(f"خطا در حلقه اصلی: {e}")
                 # تلاش برای ادامه
-                time.sleep(CHECK_INTERVAL)
+                time.sleep(config["CHECK_INTERVAL"])
 
     except KeyboardInterrupt:
         logger.info("⏹️ توقف دستی توسط کاربر.")
