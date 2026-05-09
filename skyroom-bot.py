@@ -35,7 +35,7 @@ urllib3.disable_warnings()
 # =============================================================================
 
 # آدرس اتاق اسکای‌روم
-SKYROOM_URL = "https://www.skyroom.online/ch/virtualtums/medicinetums"
+SKYROOM_URL = "https://www.skyroom.online/ch/test"
 
 # اسم مهمان برای ورود
 GUEST_NAME = "مهمان"
