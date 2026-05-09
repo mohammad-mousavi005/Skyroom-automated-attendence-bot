@@ -26,6 +26,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.webdriver.common.keys import Keys
 import requests
 
 # غیرفعال کردن هشدارهای SSL برای API کاستوم
@@ -345,12 +346,18 @@ def send_chat_message(driver: webdriver.Chrome, text: str):
             send_btn = driver.find_element(by, selector)
             if send_btn.is_displayed():
                 logger.info(f"دکمه ارسال با {by}='{selector}' پیدا شد.")
-                send_btn.click()
                 break
         except NoSuchElementException:
-            logger.info("دکمه ارسال پیدا نشد. عدم ارسال موفق❌")
+            continue
 
+    if send_btn is not None:
+        send_btn.click()
+    else:
+        # Fallback: ارسال با Enter
+        logger.info("دکمه ارسال پیدا نشد. ارسال با Enter...")
+        chat_input.send_keys(Keys.ENTER)
 
+    logger.info(f"✅ پیام ارسال شد.")
 
 
 def analyze_with_openai(messages: List[str]) -> Tuple[bool, str]:
