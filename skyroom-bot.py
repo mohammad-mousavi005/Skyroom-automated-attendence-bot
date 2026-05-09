@@ -10,6 +10,7 @@ SkyRoom Chat Monitor Bot
 """
 
 import os
+import sys
 import time
 import logging
 import urllib3
@@ -34,7 +35,7 @@ urllib3.disable_warnings()
 # =============================================================================
 
 # آدرس اتاق اسکای‌روم
-SKYROOM_URL = "لینک اسکای روم"
+SKYROOM_URL = "https://www.skyroom.online/ch/virtualtums/medicinetums"
 
 # اسم مهمان برای ورود
 GUEST_NAME = "مهمان"
@@ -55,7 +56,7 @@ BATCH_SIZE = 50
 CHECK_INTERVAL = 5
 
 # مدل OpenAI برای تحلیل
-OPENAI_MODEL = "deepseek-v4-pro-nothinking"  # یا "gpt-4o" اگر دسترسی داری
+OPENAI_MODEL = "deepseek-v4-pro-nothinking"
 
 # حداکثر زمان انتظار برای لود عناصر (ثانیه)
 WAIT_TIMEOUT = 20
@@ -66,7 +67,10 @@ WAIT_TIMEOUT = 20
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("bot.log", encoding="utf-8")],
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("bot.log", encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -109,14 +113,60 @@ def dismiss_alerts(driver: webdriver.Chrome):
 
 def guest_login(driver: webdriver.Chrome):
     """
-    ورود به عنوان مهمان.
-    تلاش می‌کند فیلد نام و دکمه ورود را پیدا کند.
+    ورود به عنوان مهمان در اسکای‌روم.
+    مرحله ۱: کلیک روی دکمه "مهمان"
+    مرحله ۲: انتظار برای باز شدن فرم و پر کردن نام
+    مرحله ۳: کلیک روی دکمه ورود
     """
     logger.info("در حال ورود مهمان...")
 
+    # ==================== مرحله ۱: کلیک روی دکمه مهمان ====================
+    guest_btn = None
+    guest_btn_selectors = [
+        (By.XPATH, "//button[contains(text(),'مهمان')]"),
+        (By.XPATH, "//a[contains(text(),'مهمان')]"),
+        (By.XPATH, "//*[contains(@class,'guest')]/button"),
+        (By.XPATH, "//*[contains(@class,'guest')]/a"),
+        (By.ID, "guestBtn"),
+        (By.ID, "guestLogin"),
+        (By.CLASS_NAME, "guest-btn"),
+        (By.CSS_SELECTOR, "button[class*='guest']"),
+        (By.CSS_SELECTOR, "a[class*='guest']"),
+    ]
+
+    for by, selector in guest_btn_selectors:
+        try:
+            guest_btn = WebDriverWait(driver, 3).until(
+                EC.element_to_be_clickable((by, selector))
+            )
+            if guest_btn.is_displayed():
+                logger.info(f"دکمه مهمان با {by}='{selector}' پیدا شد.")
+                break
+        except (TimeoutException, NoSuchElementException):
+            continue
+
+    if guest_btn is None:
+        # تلاش عمومی: اولین button یا a که متن "مهمان" دارد
+        for elem in driver.find_elements(By.XPATH, "//button | //a"):
+            try:
+                if "مهمان" in elem.text and elem.is_displayed():
+                    guest_btn = elem
+                    logger.info("دکمه مهمان با جستجوی عمومی پیدا شد.")
+                    break
+            except Exception:
+                continue
+
+    if guest_btn is None:
+        raise RuntimeError("❌ دکمه مهمان پیدا نشد. Selectorها رو تنظیم کن.")
+
+    guest_btn.click()
+    logger.info("✅ روی دکمه مهمان کلیک شد.")
+
+    # ==================== مرحله ۲: انتظار برای باز شدن فرم ====================
+    time.sleep(2)  # صبر برای انیمیشن
+
     # ==================== پیدا کردن فیلد نام ====================
     name_input = None
-    # Selectorهای احتمالی برای فیلد نام
     name_selectors = [
         (By.ID, "guestName"),
         (By.ID, "nickname"),
@@ -129,7 +179,7 @@ def guest_login(driver: webdriver.Chrome):
 
     for by, selector in name_selectors:
         try:
-            name_input = WebDriverWait(driver, 3).until(
+            name_input = WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((by, selector))
             )
             if name_input.is_displayed():
@@ -139,7 +189,6 @@ def guest_login(driver: webdriver.Chrome):
             continue
 
     if name_input is None:
-        # آخرین تلاش: هر input text روی صفحه
         inputs = driver.find_elements(By.TAG_NAME, "input")
         for inp in inputs:
             if inp.get_attribute("type") in ("text", None, "") and inp.is_displayed():
@@ -148,27 +197,26 @@ def guest_login(driver: webdriver.Chrome):
                 break
 
     if name_input is None:
-        raise RuntimeError("❌ فیلد ورود نام پیدا نشد. Selectorها رو بر اساس DOM اسکای‌روم تنظیم کن.")
+        raise RuntimeError("❌ فیلد ورود نام پیدا نشد. Selectorها رو تنظیم کن.")
 
-    # ==================== پر کردن نام ====================
     name_input.clear()
     name_input.send_keys(GUEST_NAME)
     logger.info(f"نام '{GUEST_NAME}' وارد شد.")
 
-    # ==================== پیدا کردن دکمه ورود ====================
+    # ==================== مرحله ۳: دکمه ورود نهایی ====================
     submit_btn = None
-    btn_selectors = [
+    submit_selectors = [
+        (By.XPATH, "//button[contains(text(),'ورود')]"),
+        (By.XPATH, "//button[contains(text(),'تأیید')]"),
+        (By.XPATH, "//button[contains(text(),'ادامه')]"),
+        (By.XPATH, "//button[contains(text(),'بعدی')]"),
+        (By.CSS_SELECTOR, "button[type='submit']"),
         (By.ID, "guestLoginBtn"),
         (By.ID, "joinBtn"),
         (By.CLASS_NAME, "guest-submit"),
-        (By.CSS_SELECTOR, "button[type='submit']"),
-        (By.XPATH, "//button[contains(text(),'ورود')]"),
-        (By.XPATH, "//button[contains(text(),'مهمان')]"),
-        (By.XPATH, "//button[contains(text(),'ادامه')]"),
-        (By.XPATH, "//*[contains(@class,'btn')][contains(text(),'ورود')]"),
     ]
 
-    for by, selector in btn_selectors:
+    for by, selector in submit_selectors:
         try:
             submit_btn = driver.find_element(by, selector)
             if submit_btn.is_displayed():
@@ -178,16 +226,15 @@ def guest_login(driver: webdriver.Chrome):
             continue
 
     if submit_btn is None:
-        # تلاش عمومی
         buttons = driver.find_elements(By.TAG_NAME, "button")
         for btn in buttons:
-            if btn.is_displayed():
+            if btn.is_displayed() and ("ورود" in btn.text or "تأیید" in btn.text or "ادامه" in btn.text):
                 submit_btn = btn
                 logger.info("دکمه ورود با جستجوی عمومی پیدا شد.")
                 break
 
     if submit_btn is None:
-        raise RuntimeError("❌ دکمه ورود پیدا نشد. Selectorها رو بر اساس DOM اسکای‌روم تنظیم کن.")
+        raise RuntimeError("❌ دکمه ورود پیدا نشد.")
 
     submit_btn.click()
     logger.info("✅ روی دکمه ورود کلیک شد.")
@@ -199,7 +246,7 @@ def get_messages(driver: webdriver.Chrome) -> List[str]:
     برمی‌گرداند لیستی از متن پیام‌ها.
     """
     messages = []
-    
+
     # Selectorهای احتمالی برای پیام‌ها
     msg_selectors = [
         ".chat-message",
@@ -352,6 +399,7 @@ NO: اگر حتی یکی از پیام‌ها اسم و فامیل فارسی ن
 # =============================================================================
 
 def main():
+    sys.stdout.reconfigure(encoding='utf-8')
     logger.info("=" * 60)
     logger.info("🚀 SkyRoom Bot شروع به کار کرد.")
     logger.info(f"آدرس: {SKYROOM_URL}")
