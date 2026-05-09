@@ -163,7 +163,7 @@ def guest_login(driver: webdriver.Chrome):
     logger.info("✅ روی دکمه مهمان کلیک شد.")
 
     # ==================== مرحله ۲: انتظار برای باز شدن فرم ====================
-    time.sleep(2)  # صبر برای انیمیشن
+    time.sleep(3)  # صبر برای انیمیشن
 
     # ==================== پیدا کردن فیلد نام ====================
     name_input = None
@@ -179,8 +179,8 @@ def guest_login(driver: webdriver.Chrome):
 
     for by, selector in name_selectors:
         try:
-            name_input = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((by, selector))
+            name_input = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((by, selector))
             )
             if name_input.is_displayed():
                 logger.info(f"فیلد نام با {by}='{selector}' پیدا شد.")
@@ -199,6 +199,8 @@ def guest_login(driver: webdriver.Chrome):
     if name_input is None:
         raise RuntimeError("❌ فیلد ورود نام پیدا نشد. Selectorها رو تنظیم کن.")
 
+    # اسکرول به عنصر برای اطمینان از قابل تعامل بودن
+    driver.execute_script("arguments[0].scrollIntoView(true);", name_input)
     name_input.clear()
     name_input.send_keys(GUEST_NAME)
     logger.info(f"نام '{GUEST_NAME}' وارد شد.")
@@ -218,11 +220,13 @@ def guest_login(driver: webdriver.Chrome):
 
     for by, selector in submit_selectors:
         try:
-            submit_btn = driver.find_element(by, selector)
+            submit_btn = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((by, selector))
+            )
             if submit_btn.is_displayed():
                 logger.info(f"دکمه ورود با {by}='{selector}' پیدا شد.")
                 break
-        except NoSuchElementException:
+        except TimeoutException:
             continue
 
     if submit_btn is None:
@@ -236,6 +240,7 @@ def guest_login(driver: webdriver.Chrome):
     if submit_btn is None:
         raise RuntimeError("❌ دکمه ورود پیدا نشد.")
 
+    driver.execute_script("arguments[0].scrollIntoView(true);", submit_btn)
     submit_btn.click()
     logger.info("✅ روی دکمه ورود کلیک شد.")
 
