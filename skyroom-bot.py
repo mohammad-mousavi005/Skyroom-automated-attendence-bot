@@ -246,72 +246,54 @@ def guest_login(driver: webdriver.Chrome):
     logger.info("✅ روی دکمه ورود کلیک شد.")
 
 
-def get_messages(driver: webdriver.Chrome) -> List[str]:
+def get_messages(driver: webdriver.Chrome) -> List[Tuple[str, str]]:
     """
     استخراج متن خالص پیام‌های چت از DOM.
+    برمی‌گرداند لیستی از (message_id, text) با شناسه یکتا.
     HTML هر پیام:
-      <div class="chat-msg ...">
+      <div class="chat-msg ..." id="message-297" data-message-id="297">
         <div><span class="username">نام کاربر</span></div>
         <div class="text dont-break-out rtl">متن پیام<span class="message-time">۱۴:۰۰</span></div>
       </div>
     """
     messages = []
 
-    # Selector دقیق برای div متن پیام
-    msg_text_selectors = [
-        "div.text.dont-break-out.rtl",
-        ".chat-msg div.text",
-        "[class*='text'][class*='rtl']",
-        ".chat-message-text",
-        ".msg-text",
-    ]
+    try:
+        chat_msgs = driver.find_elements(By.CSS_SELECTOR, ".chat-msg")
+    except Exception:
+        return messages
 
-    text_elements = []
-    for selector in msg_text_selectors:
-        try:
-            text_elements = driver.find_elements(By.CSS_SELECTOR, selector)
-            if text_elements:
-                logger.info(f"متن پیام‌ها با selector '{selector}' پیدا شدند: {len(text_elements)} عدد")
-                break
-        except Exception:
+    if not chat_msgs:
+        return messages
+
+    for msg_el in chat_msgs:
+        # استخراج message-id یکتا از data-message-id یا id
+        msg_id = msg_el.get_attribute("data-message-id") or msg_el.get_attribute("id") or ""
+        if not msg_id:
             continue
 
-    if not text_elements:
-        # fallback: کل chat-msg (ساختار قدیمی)
+        # پیدا کردن div متن پیام داخل این chat-msg
         try:
-            raw_elements = driver.find_elements(By.CSS_SELECTOR, ".chat-msg")
-            if raw_elements:
-                logger.warning(f"Selector دقیق پیدا نشد. استفاده از fallback: {len(raw_elements)} عدد")
-                for el in raw_elements:
-                    text = ' '.join(el.text.split()).strip()
-                    if text:
-                        messages.append(text)
-            else:
-                logger.warning("⚠️ هیچ پیامی پیدا نشد.")
-            return messages
-        except Exception:
-            logger.warning("⚠️ هیچ پیامی پیدا نشد.")
-            return messages
+            text_el = msg_el.find_element(By.CSS_SELECTOR, "div.text")
+        except NoSuchElementException:
+            continue
 
-    raw_count = len(text_elements)
-    for el in text_elements:
         # حذف متن ساعت از داخل div
         try:
-            time_span = el.find_element(By.CSS_SELECTOR, ".message-time")
+            time_span = text_el.find_element(By.CSS_SELECTOR, ".message-time")
             time_text = time_span.text.strip()
         except NoSuchElementException:
             time_text = ""
 
-        full_text = el.text.strip()
+        full_text = text_el.text.strip()
         if time_text and full_text.endswith(time_text):
             full_text = full_text[:-len(time_text)].strip()
 
         # نرمال‌سازی نهایی
         clean = ' '.join(full_text.split()).strip()
         if clean:
-            messages.append(clean)
+            messages.append((msg_id, clean))
 
-    logger.info(f"{len(messages)} پیام یکتا از {raw_count} عنصر خام استخراج شد.")
     return messages
 
 
@@ -437,8 +419,9 @@ def main():
     logger.info("=" * 60)
 
     driver = create_driver()
-    seen_messages: Set[str] = set()
-    new_batch: List[str] = []
+    seen_ids: Set[str] = set()          # شناسه‌های یکتای پیام‌ها
+    new_batch: List[str] = []            # متن پیام‌های جدید
+    last_status_log = time.time()        # زمان آخرین لاگ وضعیت
 
     try:
         # 1. باز کردن سایت
@@ -463,18 +446,25 @@ def main():
             try:
                 current_messages = get_messages(driver)
                 if not current_messages:
-                    logger.info("هنوز پیامی دریافت نشده. منتظر...")
                     time.sleep(CHECK_INTERVAL)
                     continue
 
-                # تشخیص پیام‌های جدید
-                for msg in current_messages:
-                    if msg not in seen_messages:
-                        seen_messages.add(msg)
-                        new_batch.append(msg)
-                        logger.info(f"📩 پیام جدید: {msg[:80]}{'...' if len(msg)>80 else ''}")
+                # تشخیص پیام‌های جدید با message-id
+                new_found = 0
+                for msg_id, text in current_messages:
+                    if msg_id not in seen_ids:
+                        seen_ids.add(msg_id)
+                        new_batch.append(text)
+                        new_found += 1
+                        logger.info(f"📩 پیام جدید: {text[:80]}{'...' if len(text)>80 else ''}")
 
-                logger.info(f"وضعیت بچ: {len(new_batch)}/{BATCH_SIZE}")
+                # لاگ وضعیت فقط هر ۳۰ ثانیه یا وقتی پیام جدید هست
+                now = time.time()
+                if new_found > 0:
+                    logger.info(f"+{new_found} پیام جدید | بچ: {len(new_batch)}/{BATCH_SIZE}")
+                elif now - last_status_log > 30:
+                    logger.info(f"بچ: {len(new_batch)}/{BATCH_SIZE} (منتظر پیام جدید...)")
+                    last_status_log = now
 
                 # اگر بچ پر شد
                 if len(new_batch) >= BATCH_SIZE:
