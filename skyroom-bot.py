@@ -10,7 +10,9 @@ SkyRoom Chat Monitor Bot
 """
 
 import os
+import re
 import sys
+import subprocess
 import time
 import logging
 import urllib3
@@ -111,6 +113,27 @@ def dismiss_alerts(driver: webdriver.Chrome):
         pass
 
 
+def dismiss_guest_popup(driver: webdriver.Chrome):
+    """کلیک روی popup اطلاع‌رسانی مهمان (باشه/متوجه شدم/OK)."""
+    for btn_text in ["باشه", "متوجه شدم", "OK", "بستن", "تایید"]:
+        try:
+            btn = driver.find_element(By.XPATH, f"//button[contains(.,'{btn_text}')] | //a[contains(.,'{btn_text}')]")
+            if btn.is_displayed():
+                btn.click()
+                logger.info(f"Popup با دکمه '{btn_text}' بسته شد.")
+                time.sleep(0.5)
+                return
+        except NoSuchElementException:
+            continue
+    # تلاش برای alert ساده
+    try:
+        alert = driver.switch_to.alert
+        alert.accept()
+        logger.info("Alert popup بسته شد.")
+    except Exception:
+        pass
+
+
 def guest_login(driver: webdriver.Chrome):
     """
     ورود به عنوان مهمان در اسکای‌روم.
@@ -119,6 +142,7 @@ def guest_login(driver: webdriver.Chrome):
     مرحله ۳: کلیک روی دکمه ورود
     """
     logger.info("در حال ورود مهمان...")
+    dismiss_guest_popup(driver)
 
     # ==================== مرحله ۱: کلیک روی دکمه مهمان ====================
     guest_btn = None
@@ -136,7 +160,7 @@ def guest_login(driver: webdriver.Chrome):
 
     for by, selector in guest_btn_selectors:
         try:
-            guest_btn = WebDriverWait(driver, 3).until(
+            guest_btn = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((by, selector))
             )
             if guest_btn.is_displayed():
@@ -165,39 +189,28 @@ def guest_login(driver: webdriver.Chrome):
     # ==================== مرحله ۲: انتظار برای باز شدن فرم ====================
     time.sleep(3)  # صبر برای انیمیشن
 
-    # ==================== پیدا کردن فیلد نام ====================
-    name_input = None
-    name_selectors = [
-        (By.ID, "guestName"),
-        (By.ID, "nickname"),
-        (By.NAME, "guestname"),
-        (By.NAME, "nickname"),
-        (By.CSS_SELECTOR, "input[placeholder*='نام']"),
-        (By.CSS_SELECTOR, "input[placeholder*='اسم']"),
-        (By.CSS_SELECTOR, "input[type='text']"),
-    ]
-
-    for by, selector in name_selectors:
-        try:
-            name_input = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((by, selector))
-            )
-            if name_input.is_displayed():
-                logger.info(f"فیلد نام با {by}='{selector}' پیدا شد.")
-                break
-        except TimeoutException:
-            continue
-
-    if name_input is None:
+    # ==================== پیدا کردن فیلد نام (XPath ترکیبی، یک Wait) ====================
+    name_input_xpath = (
+        "//input[@id='nickname' or @id='guestName' "
+        "or @name='guestname' or @name='nickname' "
+        "or contains(@placeholder,'نام') or contains(@placeholder,'اسم') "
+        "or @type='text']"
+    )
+    try:
+        name_input = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, name_input_xpath))
+        )
+        logger.info("فیلد نام پیدا شد.")
+    except TimeoutException:
+        # fallback سریع
         inputs = driver.find_elements(By.TAG_NAME, "input")
+        name_input = None
         for inp in inputs:
             if inp.get_attribute("type") in ("text", None, "") and inp.is_displayed():
                 name_input = inp
-                logger.info("فیلد نام با جستجوی عمومی پیدا شد.")
                 break
-
-    if name_input is None:
-        raise RuntimeError("❌ فیلد ورود نام پیدا نشد. Selectorها رو تنظیم کن.")
+        if name_input is None:
+            raise RuntimeError("❌ فیلد ورود نام پیدا نشد.")
 
     # اسکرول به عنصر برای اطمینان از قابل تعامل بودن
     driver.execute_script("arguments[0].scrollIntoView(true);", name_input)
@@ -205,40 +218,28 @@ def guest_login(driver: webdriver.Chrome):
     name_input.send_keys(GUEST_NAME)
     logger.info(f"نام '{GUEST_NAME}' وارد شد.")
 
-    # ==================== مرحله ۳: دکمه ورود نهایی ====================
-    submit_btn = None
-    submit_selectors = [
-        (By.XPATH, "//button[contains(text(),'ورود')]"),
-        (By.XPATH, "//button[contains(text(),'تأیید')]"),
-        (By.XPATH, "//button[contains(text(),'ادامه')]"),
-        (By.XPATH, "//button[contains(text(),'بعدی')]"),
-        (By.CSS_SELECTOR, "button[type='submit']"),
-        (By.ID, "guestLoginBtn"),
-        (By.ID, "joinBtn"),
-        (By.CLASS_NAME, "guest-submit"),
-    ]
-
-    for by, selector in submit_selectors:
-        try:
-            submit_btn = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((by, selector))
-            )
-            if submit_btn.is_displayed():
-                logger.info(f"دکمه ورود با {by}='{selector}' پیدا شد.")
-                break
-        except TimeoutException:
-            continue
-
-    if submit_btn is None:
+    # ==================== مرحله ۳: دکمه ورود نهایی (XPath ترکیبی) ====================
+    submit_xpath = (
+        "//button[contains(.,'تایید') or contains(text(),'ورود') "
+        "or contains(text(),'ادامه') or contains(text(),'بعدی') "
+        "or @id='guestLoginBtn' or @id='joinBtn' "
+        "or contains(@class,'guest-submit')]"
+    )
+    try:
+        submit_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, submit_xpath))
+        )
+        logger.info("دکمه ورود پیدا شد.")
+    except TimeoutException:
+        # fallback سریع
         buttons = driver.find_elements(By.TAG_NAME, "button")
+        submit_btn = None
         for btn in buttons:
-            if btn.is_displayed() and ("ورود" in btn.text or "تأیید" in btn.text or "ادامه" in btn.text):
+            if btn.is_displayed() and ("ورود" in btn.text or "تایید" in btn.text or "ادامه" in btn.text):
                 submit_btn = btn
-                logger.info("دکمه ورود با جستجوی عمومی پیدا شد.")
                 break
-
-    if submit_btn is None:
-        raise RuntimeError("❌ دکمه ورود پیدا نشد.")
+        if submit_btn is None:
+            raise RuntimeError("❌ دکمه ورود پیدا نشد.")
 
     driver.execute_script("arguments[0].scrollIntoView(true);", submit_btn)
     submit_btn.click()
@@ -247,48 +248,70 @@ def guest_login(driver: webdriver.Chrome):
 
 def get_messages(driver: webdriver.Chrome) -> List[str]:
     """
-    استخراج تمام پیام‌های فعلی چت از DOM.
-    برمی‌گرداند لیستی از متن پیام‌ها.
+    استخراج متن خالص پیام‌های چت از DOM.
+    HTML هر پیام:
+      <div class="chat-msg ...">
+        <div><span class="username">نام کاربر</span></div>
+        <div class="text dont-break-out rtl">متن پیام<span class="message-time">۱۴:۰۰</span></div>
+      </div>
     """
     messages = []
 
-    # Selectorهای احتمالی برای پیام‌ها
-    msg_selectors = [
-        ".chat-message",
-        ".message",
-        ".msg",
-        "[class*='message']",
-        "[class*='chat-message']",
-        ".chat-item",
-        ".chat-msg",
+    # Selector دقیق برای div متن پیام
+    msg_text_selectors = [
+        "div.text.dont-break-out.rtl",
+        ".chat-msg div.text",
+        "[class*='text'][class*='rtl']",
         ".chat-message-text",
-        "div[class*='msg'] div[class*='text']",
-        "//div[contains(@class,'message')]//span",
-        "//div[contains(@class,'msg')]",
+        ".msg-text",
     ]
 
-    elements = []
-    for selector in msg_selectors:
+    text_elements = []
+    for selector in msg_text_selectors:
         try:
-            if selector.startswith("//"):
-                elements = driver.find_elements(By.XPATH, selector)
-            else:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-            if elements:
-                logger.info(f"پیام‌ها با selector '{selector}' پیدا شدند: {len(elements)} عدد")
+            text_elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            if text_elements:
+                logger.info(f"متن پیام‌ها با selector '{selector}' پیدا شدند: {len(text_elements)} عدد")
                 break
         except Exception:
             continue
 
-    if not elements:
-        logger.warning("⚠️ هیچ پیامی در DOM پیدا نشد. شاید هنوز لود نشده یا selector اشتباه است.")
-        return []
+    if not text_elements:
+        # fallback: کل chat-msg (ساختار قدیمی)
+        try:
+            raw_elements = driver.find_elements(By.CSS_SELECTOR, ".chat-msg")
+            if raw_elements:
+                logger.warning(f"Selector دقیق پیدا نشد. استفاده از fallback: {len(raw_elements)} عدد")
+                for el in raw_elements:
+                    text = ' '.join(el.text.split()).strip()
+                    if text:
+                        messages.append(text)
+            else:
+                logger.warning("⚠️ هیچ پیامی پیدا نشد.")
+            return messages
+        except Exception:
+            logger.warning("⚠️ هیچ پیامی پیدا نشد.")
+            return messages
 
-    for el in elements:
-        text = el.text.strip()
-        if text:
-            messages.append(text)
+    raw_count = len(text_elements)
+    for el in text_elements:
+        # حذف متن ساعت از داخل div
+        try:
+            time_span = el.find_element(By.CSS_SELECTOR, ".message-time")
+            time_text = time_span.text.strip()
+        except NoSuchElementException:
+            time_text = ""
 
+        full_text = el.text.strip()
+        if time_text and full_text.endswith(time_text):
+            full_text = full_text[:-len(time_text)].strip()
+
+        # نرمال‌سازی نهایی
+        clean = ' '.join(full_text.split()).strip()
+        if clean:
+            messages.append(clean)
+
+    logger.info(f"{len(messages)} پیام یکتا از {raw_count} عنصر خام استخراج شد.")
     return messages
 
 
@@ -404,6 +427,7 @@ NO: اگر حتی یکی از پیام‌ها اسم و فامیل فارسی ن
 # =============================================================================
 
 def main():
+    subprocess.run("chcp 65001 > nul", shell=True)
     sys.stdout.reconfigure(encoding='utf-8')
     logger.info("=" * 60)
     logger.info("🚀 SkyRoom Bot شروع به کار کرد.")
@@ -464,8 +488,10 @@ def main():
                         logger.info(f"✅ تأیید شد! {reason}")
                         logger.info(f"📤 ارسال اسم و فامیل: {MY_FULL_NAME}")
                         send_chat_message(driver, MY_FULL_NAME)
+                        logger.info("✅ اسم ارسال شد. جمع‌آوری ۵۰ پیام بعدی شروع شد...")
                     else:
                         logger.info(f"❌ رد شد. {reason}")
+                        logger.info("منتظر ۵۰ پیام جدید بعدی...")
 
                 # استراحت
                 time.sleep(CHECK_INTERVAL)
